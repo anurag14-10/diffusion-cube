@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { sessionMock } from '../../helpers/routes-auth';
 import { createSupabaseMock, type MockResponse, type SupabaseMock } from '../../helpers/supabase-mock';
@@ -12,6 +12,8 @@ vi.mock('next/navigation', async () => (await import('../../helpers/pages-server
 vi.mock('next/headers', async () => (await import('../../helpers/pages-server-mocks')).headersModule());
 vi.mock('@/lib/supabase/server', () => ({ createClient: vi.fn() }));
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: vi.fn() }));
+// Only reached with KNOWLEDGE_SOURCE=brain.
+vi.mock('@/lib/brain/snapshot', () => ({ getBrainSnapshot: vi.fn() }));
 vi.mock('@/components/AdminDashboard', async () => ({
   default: (await import('../../helpers/pages-server-mocks')).propsStub('AdminDashboard'),
 }));
@@ -377,5 +379,41 @@ describe('app/admin/page.tsx — content', () => {
     adminData({ contribution_units: { error: { message: 'x' } } });
     await renderAdmin();
     expect(pathways().map((p) => p.toolkitAssets)).toEqual([[], []]);
+  });
+});
+
+describe('app/admin/page.tsx — KNOWLEDGE_SOURCE=brain', () => {
+  beforeEach(async () => {
+    vi.stubEnv('KNOWLEDGE_SOURCE', 'brain');
+    const { getBrainSnapshot } = await import('@/lib/brain/snapshot');
+    vi.mocked(getBrainSnapshot).mockResolvedValue({
+      schema_version: 1,
+      pathways: [{ slug: 'draft-two', lifecycle: 'published', document: '#' }],
+      units: [],
+      organisations: [],
+    });
+    as({ id: 'me', email: 'env-admin@example.com' }, ['adopter']);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('marks Published from the brain and merged PRs, not published_pathways', async () => {
+    adminData({
+      pathways: {
+        data: [
+          { ...PATHWAYS[0], brain_pr_state: 'merged' },
+          { ...PATHWAYS[1], brain_pr_state: null },
+          { id: 'p3', slug: 'open-three', title: 'Open', sector: null, created_at: '2026-10-03T00:00:00Z', review_requested: true, brain_pr_state: 'open' },
+        ],
+      },
+    });
+    await renderAdmin();
+    expect(pathways().map((p) => [p.slug, p.isPublished])).toEqual([
+      ['live-one', true],
+      ['draft-two', true],
+      ['open-three', false],
+    ]);
+    expect(admin.ops('published_pathways')).toHaveLength(0);
   });
 });

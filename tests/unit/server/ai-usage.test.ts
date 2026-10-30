@@ -34,6 +34,7 @@ describe('areaFor', () => {
     ['pathway-draft', undefined, 'contribute'],
     ['asset-reuse', undefined, 'contribute'],
     ['check-similar', undefined, 'contribute'],
+    ['brain-extract', undefined, 'contribute'],
     ['explorer-doc', undefined, 'analyse'],
     ['something-new', 'contributor', 'analyse'],
     ['', undefined, 'analyse'],

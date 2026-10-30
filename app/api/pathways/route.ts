@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { hasRole, isAdmin } from '@/lib/roles'
 import { isReservedPathwaySlug } from '@/lib/wiki-loader'
+import { isBrainSource, isLive, publishedSlugSet } from '@/lib/brain/corpus'
 
 import { withErrorHandling } from '@/lib/errors'
 // Always a valid slug (isValidSlug) — assemble refuses anything else, so a
@@ -57,9 +58,12 @@ async function handleGET(req: NextRequest) {
     return NextResponse.json({ error: 'Contributor role required' }, { status: 403 })
   }
 
+  // KNOWLEDGE_SOURCE=brain: live means published in the brain, or its brain
+  // PR merged (lib/brain/corpus.ts isLive) — not a published_pathways row.
+  const brain = isBrainSource()
   const { data: pathways, error } = await createAdminClient()
     .from('pathways')
-    .select('id, slug, title, sector, description, created_at, review_requested')
+    .select(`id, slug, title, sector, description, created_at, review_requested${brain ? ', brain_pr_state' : ''}`)
     .order('created_at', { ascending: false })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -72,9 +76,9 @@ async function handleGET(req: NextRequest) {
   const [{ data: myContribs }, { data: orgContribs }, { data: live }] = await Promise.all([
     supabase.from('pathway_contributors').select('pathway_id').eq('user_id', user.id),
     supabase.from('pathway_contributors').select('pathway_id, organisations(name)'),
-    supabase.from('published_pathways').select('slug'),
+    brain ? Promise.resolve({ data: null }) : supabase.from('published_pathways').select('slug'),
   ])
-  const liveSlugs = new Set((live ?? []).map((r) => r.slug as string))
+  const liveSlugs = brain ? await publishedSlugSet() : new Set((live ?? []).map((r) => r.slug as string))
 
   const mySet = new Set((myContribs ?? []).map((r) => r.pathway_id as string))
   const orgsByPathway = new Map<string, Set<string>>()
@@ -87,9 +91,10 @@ async function handleGET(req: NextRequest) {
     orgsByPathway.get(pathwayId)!.add(orgName)
   }
 
-  const result = (pathways ?? []).map(({ review_requested, ...p }) => ({
+  type Row = { id: string; slug: string; review_requested: boolean | null; brain_pr_state?: string | null }
+  const result = ((pathways ?? []) as unknown as Row[]).map(({ review_requested, brain_pr_state, ...p }) => ({
     ...p,
-    isPublished: liveSlugs.has(p.slug),
+    isPublished: isLive(p.slug, brain_pr_state, liveSlugs),
     reviewRequested: review_requested ?? false,
     isContributor: mySet.has(p.id),
     orgs: Array.from(orgsByPathway.get(p.id) ?? []),

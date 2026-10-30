@@ -42,6 +42,9 @@ const PUBLIC_PATHS = [
   // Browser error reports from app/error.tsx — a page can crash before or
   // without sign-in. Rate-limited per IP and size-capped inside the route.
   '/api/errors/client',
+  // Called by GitHub for the Cube-Brain repo (no session); authenticated by
+  // its X-Hub-Signature-256 inside the route instead.
+  '/api/brain/webhook',
 ];
 
 // x-user-email is trusted by server components ((app)/layout.tsx, /analyse,

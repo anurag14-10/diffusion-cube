@@ -48,14 +48,25 @@ interface Props {
   isPending: boolean;
   onPublish: () => void;
   onRemove: () => void;
+  // Brain mode only (see AdminPathwaysPanel).
+  onDecline?: () => void;
 }
 
-export default function AdminPathwayRowCard({ row, isPending, onPublish, onRemove }: Props) {
+const VALIDATION_BADGE = {
+  pending: { label: 'Checks running', className: 'bg-navy/5 text-ink-soft' },
+  passed: { label: 'Checks passed', className: 'bg-blue-soft text-blue' },
+  failed: { label: 'Checks failed', className: 'bg-coral/10 text-coral' },
+} as const;
+
+export default function AdminPathwayRowCard({ row, isPending, onPublish, onRemove, onDecline }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [docContent, setDocContent] = useState<string | null>(null);
   const [docLoading, setDocLoading] = useState(false);
 
   const status = pathwayStatus(row);
+  // Brain mode: Publish merges the review, which the brain's checks must pass first.
+  const review = status === 'awaiting' ? row.brain : null;
+  const canPublish = !review || review.validation === 'passed';
 
   async function handleToggle() {
     if (expanded) {
@@ -106,22 +117,54 @@ export default function AdminPathwayRowCard({ row, isPending, onPublish, onRemov
                   Draft
                 </span>
               )}
+              {review?.validation && (
+                <span
+                  title={review.validationDetail ?? undefined}
+                  className={`rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em] ${VALIDATION_BADGE[review.validation].className}`}
+                >
+                  {VALIDATION_BADGE[review.validation].label}
+                </span>
+              )}
             </div>
             <p className="text-xs text-ink-soft mt-0.5">
               {row.sector || 'No sector'} · {new Date(row.created_at).toLocaleDateString()}
             </p>
+            {review?.validation === 'failed' && review.validationDetail && (
+              <p className="mt-1 text-xs text-coral">{review.validationDetail}</p>
+            )}
           </div>
         </button>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {review?.prUrl && (
+            <a
+              href={review.prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-lg border border-navy/15 px-2.5 py-1 text-xs font-medium text-navy transition hover:border-coral hover:text-coral"
+            >
+              Review on GitHub
+            </a>
+          )}
           {status === 'awaiting' && (
             <button
               type="button"
               onClick={onPublish}
-              disabled={isPending}
+              disabled={isPending || !canPublish}
+              title={canPublish ? undefined : "Publishing waits for the brain's checks to pass."}
               className="rounded-lg bg-navy px-2.5 py-1 text-xs font-medium text-white transition hover:bg-coral disabled:opacity-50"
             >
               {isPending ? 'Publishing…' : 'Publish'}
+            </button>
+          )}
+          {status === 'awaiting' && onDecline && (
+            <button
+              type="button"
+              onClick={onDecline}
+              disabled={isPending}
+              className="rounded-lg border border-navy/15 px-2.5 py-1 text-xs font-medium text-navy transition hover:border-coral hover:text-coral disabled:opacity-50"
+            >
+              Decline
             </button>
           )}
           <button

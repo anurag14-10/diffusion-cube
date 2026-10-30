@@ -114,6 +114,15 @@ export const libraryPathways: LibraryPathway[] = [
 
 export const libraryStages: Stage[] = ['Explore', 'Define', 'Pilot', 'Scale'];
 
+// Derives an accent colour from a slug, for a card that isn't hard-coded above
+// (published_pathways, and every card when KNOWLEDGE_SOURCE=brain), so its
+// colour never changes between visits.
+export function slugToAccent(slug: string): Accent {
+  const accents = ['coral', 'yellow', 'blue', 'navy'] as const;
+  const hash = slug.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+  return accents[hash % 4];
+}
+
 export const librarySectors: string[] = Array.from(
   new Set(libraryPathways.map((p) => p.sector).filter((s): s is string => !!s))
 );

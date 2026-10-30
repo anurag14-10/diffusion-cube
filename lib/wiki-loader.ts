@@ -1,6 +1,7 @@
 import path from 'path';
 import { createClient } from '@/lib/supabase/server';
 import { readStaticFile } from '@/lib/static-content';
+import { isBrainReservedSlug, isBrainSource } from '@/lib/brain/corpus';
 
 // The corpus lives inside this repo (content/wiki/) so it deploys on Vercel
 // with no extra step; S3 is the likely eventual home once the corpus grows
@@ -59,8 +60,11 @@ export async function curatedPathwaySlugs(): Promise<Set<string>> {
 
 // A pathway's slug is the file assemble commits to, so a new pathway may not
 // take a curated slug (or the index's own name) — it would overwrite that file.
+// KNOWLEDGE_SOURCE=brain: a published brain pathway with no pathways row
+// (lib/brain/corpus.ts isBrainReservedSlug) is the curated equivalent.
 export async function isReservedPathwaySlug(slug: string): Promise<boolean> {
-  return slug === 'index' || (await curatedPathwaySlugs()).has(slug);
+  if (slug === 'index') return true;
+  return isBrainSource() ? isBrainReservedSlug(slug) : (await curatedPathwaySlugs()).has(slug);
 }
 
 // The AI Diffusion Pathway Framework — dimensions, sub-categories, stage

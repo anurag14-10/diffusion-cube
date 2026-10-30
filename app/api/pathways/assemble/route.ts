@@ -9,6 +9,12 @@ import { applyToolkitAssetFiles } from '@/lib/toolkit-assets'
 import { loadPathwayToolkitAssets, toBlockEntry } from '@/lib/toolkit-assets-server'
 
 import { withErrorHandling } from '@/lib/errors'
+import { isBrainSource } from '@/lib/brain/corpus'
+import { submitPathwayToBrain } from '@/lib/brain/submit'
+
+// KNOWLEDGE_SOURCE=brain extracts units with Claude and opens a brain pull
+// request before answering (lib/brain/submit.ts), which can take a minute or two.
+export const maxDuration = 300
 // Publishes a contributor's current pathway draft as the pathway's live
 // document, verbatim — whatever design_documents (doc_type='draft') holds
 // for this design becomes content/wiki/pathways/<slug>.md and
@@ -69,7 +75,7 @@ async function handlePOST(req: NextRequest) {
 
   const { data: pathway, error: pwErr } = await admin
     .from('pathways')
-    .select('id, slug')
+    .select('id, slug, title')
     .eq('id', pathwayId)
     .single()
   if (pwErr || !pathway) return NextResponse.json({ error: 'Pathway not found' }, { status: 404 })
@@ -113,6 +119,32 @@ async function handlePOST(req: NextRequest) {
   // goes back to the browser as `detail`).
   const assets = await loadPathwayToolkitAssets(pathwayId)
   const assembled = applyToolkitAssetFiles(draftRow.content, assets.map(toBlockEntry))
+
+  // KNOWLEDGE_SOURCE=brain: the pathway goes to the Cube-Brain as a pull
+  // request (merging it is what publishes), not to this repo. Nothing is
+  // written to pathways unless the PR was opened; any failure throws to
+  // withErrorHandling and the contributor can send again.
+  if (isBrainSource()) {
+    const pr = await submitPathwayToBrain({ slug: pathway.slug, title: pathway.title ?? pathway.slug, document: assembled })
+    const { error: updateErr } = await admin.from('pathways').update({
+      content_cache: assembled,
+      review_requested: true,
+      assembled_design_doc_id: draftRow.id,
+      brain_pr_number: pr.number,
+      brain_pr_url: pr.url,
+      brain_pr_state: 'open',
+      brain_validation: 'pending',
+      brain_validation_detail: null,
+    }).eq('id', pathwayId)
+    if (updateErr) throw updateErr
+    return NextResponse.json({
+      content: draftRow.content,
+      slug: pathway.slug,
+      assembled_design_doc_id: draftRow.id,
+      prUrl: pr.url,
+      prNumber: pr.number,
+    })
+  }
 
   const assembledPath = `content/wiki/pathways/${pathway.slug}.md`
   const existing = await ghReadFile(assembledPath)

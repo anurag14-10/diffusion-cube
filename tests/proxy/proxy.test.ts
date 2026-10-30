@@ -66,6 +66,7 @@ describe('proxy — anonymous visitors', () => {
     '/api/toolkit-assets/abc/download',
     '/api/auth/send-email',
     '/api/errors/client',
+    '/api/brain/webhook',
   ];
 
   it.each(publicPaths)('lets an anonymous request through to %s', async (path) => {
@@ -107,6 +108,13 @@ describe('proxy — anonymous visitors', () => {
     await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
     expect(res.headers.get('location')).toBeNull();
   });
+
+  it.each(['/api/admin/brain/resync', '/api/brain/other', '/api/brain'])(
+    'keeps %s protected: only the brain webhook itself is public',
+    async (path) => {
+      expect((await proxy(req(path))).status).toBe(401);
+    }
+  );
 
   it('does not treat a path that merely shares a public prefix as public', async () => {
     // '/explorer' is not '/explore' nor under '/explore/'.

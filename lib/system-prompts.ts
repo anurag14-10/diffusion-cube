@@ -865,7 +865,10 @@ ${toolkitAssetsBlock}`;
 
 // No pathway selected — grounded in the library-wide overview (every
 // pathway's frontmatter title/description).
-export function libraryOverviewSystemPrompt(overview: string, count: number): string {
+// `matching` (KNOWLEDGE_SOURCE=brain only): the pathways that match what the
+// visitor has said so far, with their documents and micro-innovations
+// (lib/brain/retrieve.ts libraryGrounding), Source Trace already stripped.
+export function libraryOverviewSystemPrompt(overview: string, count: number, matching = ''): string {
   return `You are the assistant embedded in the 100 Pathways Diffusion Library, a collection of AI diffusion pathways. This conversation is not tied to one specific pathway yet. You are grounded ONLY in the library contents below.
 
 Help the user find what they're looking for. If their question is really about one specific pathway, name it and offer to go deeper on it. If they're asking something general about the library or the diffusion framework, answer from what's below rather than inventing details.
@@ -884,7 +887,7 @@ The library holds exactly ${count} pathway${count === 1 ? '' : 's'} — one per 
 
 LIBRARY CONTENTS (pathway id, title, description):
 ${overview}
-`;
+${matching ? `\nMATCHING PATHWAYS (the pathways that match what the visitor has said so far; ground specific answers in these, and suggest opening one to go deeper):\n${matching}\n` : ''}`;
 }
 
 // Sent as the first (invisible) user turn when a pathway tile is clicked —

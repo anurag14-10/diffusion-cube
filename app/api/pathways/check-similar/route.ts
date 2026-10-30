@@ -7,6 +7,7 @@ import { hasRole } from '@/lib/roles'
 import { logError, withErrorHandling } from '@/lib/errors'
 import { recordAiUsage } from '@/lib/ai-usage'
 import { listStaticPathways } from '@/lib/wiki-content'
+import { isBrainSource, publishedPathways } from '@/lib/brain/corpus'
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 // Candidate ids for curated pathways (no pathways row, so no uuid) — a slug
@@ -64,9 +65,19 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ error: 'title and description required' }, { status: 400 })
   }
 
-  const { data: live, error: liveError } = await supabase.from('published_pathways').select('slug')
-  if (liveError) return NextResponse.json({ error: liveError.message }, { status: 500 })
-  const liveSlugs = (live ?? []).map((r) => r.slug as string)
+  // KNOWLEDGE_SOURCE=brain: "published" is the brain's published pathways.
+  // Those with a pathways row are joinable; the rest (curated) are reported
+  // as curatedMatch, exactly as the in-repo curated corpus is otherwise.
+  const brain = isBrainSource()
+  const brainPathways = brain ? await publishedPathways() : []
+  let liveSlugs: string[]
+  if (brain) {
+    liveSlugs = brainPathways.map((p) => p.slug)
+  } else {
+    const { data: live, error: liveError } = await supabase.from('published_pathways').select('slug')
+    if (liveError) return NextResponse.json({ error: liveError.message }, { status: 500 })
+    liveSlugs = (live ?? []).map((r) => r.slug as string)
+  }
 
   // Every published pathway, not just the caller's own — the pathways RLS
   // (migration 0040) limits a session to the pathways it contributes to.
@@ -74,7 +85,7 @@ async function handlePOST(req: NextRequest) {
   const { data: pathways, error } = liveSlugs.length
     ? await createAdminClient()
         .from('pathways')
-        .select('id, title, sector, description')
+        .select('id, slug, title, sector, description')
         .in('slug', liveSlugs)
         .order('created_at', { ascending: false })
     : { data: [], error: null }
@@ -84,8 +95,16 @@ async function handlePOST(req: NextRequest) {
   // pathways row to join — a match there is reported as curatedMatch so the
   // contributor is pointed at it instead. A slug already live from the
   // database is listed once, as the joinable one.
-  const liveSet = new Set(liveSlugs)
-  const curated = (await listStaticPathways()).filter((p) => !liveSet.has(p.slug))
+  let curated: { slug: string; title: string; sector?: string; description: string }[]
+  if (brain) {
+    const joinable = new Set((pathways ?? []).map((p) => p.slug as string))
+    curated = brainPathways
+      .filter((p) => !joinable.has(p.slug))
+      .map((p) => ({ slug: p.slug, title: p.title ?? p.slug, sector: p.sector, description: p.summary ?? '' }))
+  } else {
+    const liveSet = new Set(liveSlugs)
+    curated = (await listStaticPathways()).filter((p) => !liveSet.has(p.slug))
+  }
 
   const candidates = [
     ...(pathways ?? []).map((p) => ({ id: p.id as string, title: p.title, sector: p.sector, description: p.description })),

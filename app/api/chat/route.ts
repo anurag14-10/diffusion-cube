@@ -23,6 +23,8 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { recordAiUsage } from '@/lib/ai-usage';
 import { messagesForMode, systemForMode } from '@/lib/prompt-cache';
 import { loadPublishedToolkitAssets } from '@/lib/toolkit-assets-server';
+import { isBrainSource, libraryDocument, libraryOverview } from '@/lib/brain/corpus';
+import { groundingForConversation, libraryGrounding } from '@/lib/brain/retrieve';
 
 import { logError, sessionUserId, withErrorHandling } from '@/lib/errors';
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -250,8 +252,9 @@ async function handlePOST(req: Request) {
       // a file path below — only a real slug shape gets that far, never
       // "../../wiki/pathways/x" (which would read any .md on the server).
       if (!isValidSlug(pathwayId)) return Response.json({ error: 'Unknown pathway.' }, { status: 404 });
-      let document = await readLibraryPathwayDocument(pathwayId);
-      if (!document) {
+      // KNOWLEDGE_SOURCE=brain: the published brain pathway only, no fallback.
+      let document = isBrainSource() ? await libraryDocument(pathwayId) : await readLibraryPathwayDocument(pathwayId);
+      if (!document && !isBrainSource()) {
         const { data, error } = await supabase
           .from('published_pathways')
           .select('content, created_at')
@@ -269,8 +272,14 @@ async function handlePOST(req: Request) {
       const toolkitAssets = await loadPublishedToolkitAssets({ pathwaySlug: pathwayId });
       systemPrompt = libraryPathwaySystemPrompt(document, toolkitAssets);
     } else {
-      const { overview, count } = await buildLibraryOverview();
-      systemPrompt = libraryOverviewSystemPrompt(overview, count);
+      // KNOWLEDGE_SOURCE=brain: the overview comes from the brain, and once the
+      // visitor has said something (not the kickoff), the pathways matching
+      // it are added. The rate limit and input checks above already ran.
+      const brain = isBrainSource();
+      const { overview, count } = brain ? await libraryOverview() : await buildLibraryOverview();
+      const matching =
+        brain && Array.isArray(apiMessages) && apiMessages.length > 0 ? await libraryGrounding(apiMessages) : '';
+      systemPrompt = libraryOverviewSystemPrompt(overview, count, matching);
     }
     // Mirrors the original backend: an empty history means "just opened a
     // pathway," so the model gets a fixed kickoff turn instead — never shown
@@ -307,6 +316,15 @@ async function handlePOST(req: Request) {
     return new Response(readable, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
   }
 
+  // KNOWLEDGE_SOURCE=brain: Analyse and the Contributor conversation are
+  // grounded on the pathways that match the conversation (lib/brain/retrieve.ts).
+  // Otherwise the in-repo corpus plus published_pathways, as before
+  // (docs/features/cube-brain-knowledge-source/).
+  function loadCorpus(): Promise<string> {
+    if (!isBrainSource()) return loadWikiContext();
+    return groundingForConversation({ supabase, designId, grid, meta, messages, mode, flow });
+  }
+
   // Load only what this mode's prompt uses: extract-insights and pathway-draft
   // never read the corpus, and only the Explorer companion reads resources.
   // (Static files are memoised in production — lib/static-content.ts; the
@@ -314,7 +332,7 @@ async function handlePOST(req: Request) {
   const needsCorpus = mode !== 'extract-insights' && mode !== 'pathway-draft';
   const needsResources = mode === 'companion' && flow !== 'contributor';
   const [wikiContent, frameworkContent, resourcesContent] = await Promise.all([
-    needsCorpus ? loadWikiContext() : '',
+    needsCorpus ? loadCorpus() : '',
     loadFrameworkContent(),
     needsResources ? loadResourcesContent() : '',
   ]);

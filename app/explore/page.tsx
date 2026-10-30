@@ -4,15 +4,8 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { isAdmin } from '@/lib/roles';
 import AppShell from '@/components/AppShell';
 import ExploreLibrary from './ExploreLibrary';
-import { type LibraryPathway } from '@/lib/library-pathways';
-
-// Derives an accent colour from a slug — same function as the publish route,
-// kept in sync so the card colour never changes between admin preview and live.
-function slugToAccent(slug: string): LibraryPathway['accent'] {
-  const accents = ['coral', 'yellow', 'blue', 'navy'] as const;
-  const hash = slug.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-  return accents[hash % 4];
-}
+import { slugToAccent, type LibraryPathway } from '@/lib/library-pathways';
+import { isBrainSource, libraryCards } from '@/lib/brain/corpus';
 
 // Fetches published pathways from Supabase and maps them to LibraryPathway
 // cards. Uses the service-role client so this works for anonymous visitors
@@ -62,12 +55,16 @@ export default async function PublicExplorePage({
     data: { user },
   } = await supabase.auth.getUser();
 
-  const dbPathways = await getPublishedPathways();
+  // KNOWLEDGE_SOURCE=brain: every card comes from the brain, and the
+  // hard-coded list in lib/library-pathways.ts is not merged in.
+  const brain = isBrainSource();
+  const dbPathways = brain ? await libraryCards() : await getPublishedPathways();
+  const includeStatic = !brain;
 
   if (!user) {
     return (
       <AppShell email={null} adoptions={[]} isAdmin={false}>
-        <ExploreLibrary dbPathways={dbPathways} />
+        <ExploreLibrary dbPathways={dbPathways} includeStatic={includeStatic} />
       </AppShell>
     );
   }
@@ -90,7 +87,7 @@ export default async function PublicExplorePage({
 
   return (
     <AppShell email={email} adoptions={adoptions ?? []} isAdmin={adminAccess}>
-      <ExploreLibrary signedIn dbPathways={dbPathways} initialConversation={initialConversation} />
+      <ExploreLibrary signedIn dbPathways={dbPathways} includeStatic={includeStatic} initialConversation={initialConversation} />
     </AppShell>
   );
 }

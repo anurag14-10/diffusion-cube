@@ -183,3 +183,31 @@ describe('pathways select policies (0040)', () => {
     expect(policy).toMatch(/user_roles\s+ur\s+where\s+ur\.user_id\s*=\s*auth\.uid\(\)\s+and\s+ur\.role\s*=\s*'admin'/);
   });
 });
+
+// The brain snapshot carries contributor-only Source Trace appendices, and the
+// selection cache is per-design server state: neither is for browser clients.
+describe('0042_brain_knowledge_source', () => {
+  const sql = sourceOf('0042_brain_knowledge_source.sql');
+
+  it('creates both tables with RLS on and no policies', () => {
+    for (const table of ['brain_snapshots', 'knowledge_selections']) {
+      expect(sql).toMatch(new RegExp(`create\\s+table\\s+if\\s+not\\s+exists\\s+public\\.${table}\\b`));
+      expect(sql).toMatch(new RegExp(`alter\\s+table\\s+public\\.${table}\\s+enable\\s+row\\s+level\\s+security`));
+      expect(allSql).not.toMatch(new RegExp(`create\\s+policy[^;]*\\bon\\s+(?:public\\.)?${table}\\b`));
+    }
+  });
+
+  it('cascades a design deletion to its cached selection', () => {
+    expect(sql).toMatch(/design_id\s+uuid\s+primary\s+key\s+references\s+public\.designs\s*\(id\)\s+on\s+delete\s+cascade/);
+  });
+
+  it('adds the PR columns to pathways with constrained states', () => {
+    expect(sql).toMatch(/brain_pr_state\s+text\s+check\s*\(brain_pr_state\s+in\s*\('open',\s*'merged',\s*'closed'\)\)/);
+    expect(sql).toMatch(/brain_validation\s+text\s+check\s*\(brain_validation\s+in\s*\('pending',\s*'passed',\s*'failed'\)\)/);
+  });
+
+  it('is additive only', () => {
+    expect(sql).not.toMatch(/\bdrop\s+(table|column|policy|function)\b/);
+    expect(sql).not.toMatch(/\brename\b/);
+  });
+});

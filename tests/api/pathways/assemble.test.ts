@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSupabaseMock, type MockResponse, type MockUser, type SupabaseMock } from '../../helpers/supabase-mock';
 import { jsonRequest } from '../../helpers/request';
 import { rolesTable } from '../../helpers/chat-session';
@@ -7,6 +7,9 @@ import { rolesTable } from '../../helpers/chat-session';
 vi.mock('@/lib/supabase/server', () => ({ createClient: vi.fn() }));
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: vi.fn() }));
 vi.mock('@/lib/github', () => ({ ghReadFile: vi.fn(), ghWriteFile: vi.fn() }));
+// Only reached with KNOWLEDGE_SOURCE=brain.
+vi.mock('@/lib/brain/submit', () => ({ submitPathwayToBrain: vi.fn() }));
+vi.mock('@/lib/brain/snapshot', () => ({ getBrainSnapshot: vi.fn() }));
 
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
@@ -14,6 +17,8 @@ import { ghReadFile, ghWriteFile } from '@/lib/github';
 import { GENERIC_ERROR_MESSAGE } from '@/lib/error-messages';
 import { applyToolkitAssetFiles } from '@/lib/toolkit-assets';
 import { POST } from '@/app/api/pathways/assemble/route';
+import { submitPathwayToBrain } from '@/lib/brain/submit';
+import { getBrainSnapshot } from '@/lib/brain/snapshot';
 
 const URL = 'http://localhost/api/pathways/assemble';
 const USER: MockUser = { id: 'u1', email: 'contrib@example.com' };
@@ -252,5 +257,75 @@ describe('POST /api/pathways/assemble — publish', () => {
     expect(res.status).toBe(500);
     expect(JSON.stringify(await res.json())).not.toContain('contribution_units');
     expect(ghWriteFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/pathways/assemble — KNOWLEDGE_SOURCE=brain', () => {
+  beforeEach(() => {
+    vi.stubEnv('KNOWLEDGE_SOURCE', 'brain');
+    vi.mocked(getBrainSnapshot).mockResolvedValue({ schema_version: 1, pathways: [], units: [], organisations: [] });
+    vi.mocked(submitPathwayToBrain).mockResolvedValue({ number: 7, url: 'https://github.com/o/brain/pull/7', unitCount: 4, patternCount: 1 });
+    setup({ pathway: { data: { id: 'p1', slug: 'new-path', title: 'New Path' } } });
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('opens a brain PR with the assembled document and records it, never committing to this repo', async () => {
+    const res = await post(valid);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ slug: 'new-path', prNumber: 7, prUrl: 'https://github.com/o/brain/pull/7' });
+    expect(submitPathwayToBrain).toHaveBeenCalledWith({ slug: 'new-path', title: 'New Path', document: DRAFT });
+    expect(ghWriteFile).not.toHaveBeenCalled();
+    expect(admin.ops('pathways', 'update')[0].payload).toEqual({
+      content_cache: DRAFT,
+      review_requested: true,
+      assembled_design_doc_id: 'doc-3',
+      brain_pr_number: 7,
+      brain_pr_url: 'https://github.com/o/brain/pull/7',
+      brain_pr_state: 'open',
+      brain_validation: 'pending',
+      brain_validation_detail: null,
+    });
+  });
+
+  it('still refuses the wrong role before anything is extracted', async () => {
+    setup({ roles: ['adopter'] });
+    expect((await post(valid)).status).toBe(403);
+    expect(submitPathwayToBrain).not.toHaveBeenCalled();
+  });
+
+  it('still refuses another member\'s workspace', async () => {
+    setup({ design: { id: 'd1', pathway_id: 'other' }, pathway: { data: { id: 'p1', slug: 'new-path', title: 'New Path' } } });
+    expect((await post(valid)).status).toBe(403);
+    expect(submitPathwayToBrain).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing to pathways when extraction or GitHub fails', async () => {
+    vi.mocked(submitPathwayToBrain).mockRejectedValue(new Error('Brain extraction returned no units'));
+    const res = await post(valid);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: GENERIC_ERROR_MESSAGE });
+    expect(admin.ops('pathways', 'update')).toHaveLength(0);
+  });
+
+  it('refuses a slug that is a curated brain pathway (no pathways row of its own)', async () => {
+    vi.mocked(getBrainSnapshot).mockResolvedValue({
+      schema_version: 1,
+      pathways: [{ slug: 'new-path', lifecycle: 'published', document: '#' }],
+      units: [],
+      organisations: [],
+    });
+    admin = createSupabaseMock({
+      tables: {
+        pathways: (op) => (op.action === 'select' && op.single === 'maybeSingle' ? { data: null } : op.action === 'select' ? { data: { id: 'p1', slug: 'new-path', title: 'New Path' } } : {}),
+        design_documents: { data: { id: 'doc-3', content: DRAFT } },
+        contribution_units: { data: [] },
+        sys_errors: {},
+      },
+    });
+    vi.mocked(createAdminClient).mockReturnValue(admin.client);
+    expect((await post(valid)).status).toBe(409);
+    expect(submitPathwayToBrain).not.toHaveBeenCalled();
   });
 });

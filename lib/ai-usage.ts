@@ -9,13 +9,16 @@ export type UsageArea = 'explore' | 'analyse' | 'contribute';
 
 // The one place internal modes map to the three product areas. `companion`
 // and `extract-insights` serve both signed-in flows, so they go by `flow`.
-// 'check-similar' is app/api/pathways/check-similar's duplicate-pathway check.
+// 'check-similar' is app/api/pathways/check-similar's duplicate-pathway check;
+// 'brain-extract' is the unit extraction at Send for review (lib/brain/extract.ts).
 export function areaFor(mode: string, flow?: string | null): UsageArea {
   if (mode === 'library') return 'explore';
   if (mode === 'companion' || mode === 'extract-insights') {
     return flow === 'contributor' ? 'contribute' : 'analyse';
   }
-  if (mode === 'pathway-draft' || mode === 'asset-reuse' || mode === 'check-similar') return 'contribute';
+  if (mode === 'pathway-draft' || mode === 'asset-reuse' || mode === 'check-similar' || mode === 'brain-extract') {
+    return 'contribute';
+  }
   return 'analyse';
 }
 

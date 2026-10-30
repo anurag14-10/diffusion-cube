@@ -196,7 +196,8 @@ export async function sendAuthLinkEmail(opts: {
 // Links in contribution emails always point at the production app, whatever
 // host the admin who triggered the email happened to be on (localhost, a
 // Vercel preview URL) — the contributor reads the email later, outside it.
-export const CUBE_APP_URL = 'https://cube.100pathways.com';
+// APP_URL sets it for a deployment on another domain (no trailing slash).
+export const CUBE_APP_URL = (process.env.APP_URL || 'https://cube.100pathways.com').replace(/\/+$/, '');
 
 export async function sendContributionEmail(opts: {
   to: string | string[];

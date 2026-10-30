@@ -180,7 +180,7 @@ describe('AdminPathwaysPanel', () => {
     render(<AdminPathwaysPanel initialRows={[pathway(1)]} />);
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     const dialog = screen.getByRole('dialog', { name: 'Delete "Pathway 1"?' });
-    expect(within(dialog).getByText(/does not remove the pathway document already published/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/unpublishes it from the Explore library and Analyse corpus/)).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(fn).not.toHaveBeenCalled();

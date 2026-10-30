@@ -55,9 +55,13 @@ const accentBadge: Record<Accent, string> = {
 export default function ExploreLibrary({
   signedIn = false,
   dbPathways = [],
+  includeStatic = true,
   initialConversation = null,
 }: {
   signedIn?: boolean;
+  // False when the cards come from the brain (KNOWLEDGE_SOURCE=brain): then
+  // dbPathways is the whole library and the static list is not merged in.
+  includeStatic?: boolean;
   // Pathways fetched server-side from published_pathways — merged with the
   // static libraryPathways list, with DB entries taking precedence by slug.
   dbPathways?: LibraryPathway[];
@@ -68,7 +72,7 @@ export default function ExploreLibrary({
   // DB pathways take precedence over static ones with the same slug so a
   // re-published pathway is always the latest version.
   const dbSlugs = new Set(dbPathways.map((p) => p.id));
-  const allPathways = [...dbPathways, ...libraryPathways.filter((p) => !dbSlugs.has(p.id))];
+  const allPathways = includeStatic ? [...dbPathways, ...libraryPathways.filter((p) => !dbSlugs.has(p.id))] : dbPathways;
 
   const allSectors = Array.from(new Set(allPathways.map((p) => p.sector).filter((s): s is string => !!s)));
   const allTags = Array.from(new Set(allPathways.flatMap((p) => p.tags))).sort();

@@ -4,6 +4,7 @@ import { readStaticFile } from '@/lib/static-content';
 import { stripFrontmatter } from '@/lib/strip-frontmatter';
 import { isValidSlug } from '@/lib/slug';
 import { curatedPathwaySlugs } from '@/lib/wiki-loader';
+import { isBrainSource, publishedPathways } from '@/lib/brain/corpus';
 
 // Reads the same in-repo corpus lib/wiki-loader.ts injects into prompts, but
 // for on-demand browsing in the app UI — separate concerns: wiki-loader.ts
@@ -83,6 +84,7 @@ export async function listStaticPathways(): Promise<WikiPathwaySummary[]> {
 // Supabase so publishing is instant — no git commit or redeploy per pathway.
 // Both are merged here for browsing.
 export async function listWikiPathways(): Promise<WikiPathwaySummary[]> {
+  if (isBrainSource()) return listBrainPathways();
   const [staticPathways, publishedResult] = await Promise.all([
     listStaticPathways(),
     (async () => {
@@ -103,6 +105,23 @@ export async function listWikiPathways(): Promise<WikiPathwaySummary[]> {
   }));
 
   return [...staticPathways, ...published];
+}
+
+// KNOWLEDGE_SOURCE=brain: every published brain pathway
+// (docs/features/cube-brain-knowledge-source/), in place of the static index
+// plus published_pathways. `category` is the first tag, as the index's
+// heading grouping has no brain equivalent.
+async function listBrainPathways(): Promise<WikiPathwaySummary[]> {
+  return (await publishedPathways()).map((p) => ({
+    slug: p.slug,
+    title: p.title ?? p.slug,
+    description: p.card_hook || p.summary || '',
+    category: p.tags?.[0] ?? '',
+    sector: p.sector || undefined,
+    stage: p.document.match(/^stage:\s*(.+)$/m)?.[1]?.trim(),
+    timestamp: p.document.match(/^timestamp:\s*(.+)$/m)?.[1]?.trim(),
+    contributor: p.document.match(/^contributor:\s*(.+)$/m)?.[1]?.trim(),
+  }));
 }
 
 export interface WikiStats {
@@ -145,6 +164,14 @@ export async function getWikiPathway(slug: string): Promise<WikiPathwayContent |
   // The slug comes from the URL and becomes a file path — only a real slug
   // shape gets that far, never "../../x".
   if (!isValidSlug(slug)) return null;
+  if (isBrainSource()) {
+    const pathway = (await publishedPathways()).find((p) => p.slug === slug);
+    if (!pathway) return null;
+    return {
+      title: pathway.document.match(/^title:\s*(.+)$/m)?.[1]?.trim() ?? pathway.title ?? slug,
+      content: stripProvenanceAppendix(stripFrontmatter(pathway.document)),
+    };
+  }
   // Only a curated file is read from disk; an assembled-but-unpublished draft
   // in the same folder is not public (see curatedPathwaySlugs).
   const raw = (await curatedPathwaySlugs()).has(slug)

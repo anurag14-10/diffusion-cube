@@ -231,4 +231,11 @@ describe('sendContributionEmail', () => {
     const email = await load();
     expect(email.CUBE_APP_URL).toBe('https://cube.100pathways.com');
   });
+
+  it('takes the app URL from APP_URL when a deployment sets it, without a trailing slash', async () => {
+    vi.stubEnv('APP_URL', 'https://cube-new.vercel.app/');
+    const email = await load();
+    expect(email.CUBE_APP_URL).toBe('https://cube-new.vercel.app');
+    vi.unstubAllEnvs();
+  });
 });

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSupabaseMock, type MockUser, type SupabaseMock } from '../helpers/supabase-mock';
 import { rolesTable } from '../helpers/chat-session';
 import { jsonRequest } from '../helpers/request';
@@ -13,6 +13,13 @@ vi.mock('@anthropic-ai/sdk', () => ({
 }));
 vi.mock('@/lib/supabase/server', () => ({ createClient: vi.fn() }));
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: vi.fn() }));
+// Only reached with KNOWLEDGE_SOURCE=brain (the brain-mode block below).
+vi.mock('@/lib/brain/retrieve', () => ({ groundingForConversation: vi.fn(), libraryGrounding: vi.fn() }));
+vi.mock('@/lib/brain/corpus', () => ({
+  isBrainSource: () => process.env.KNOWLEDGE_SOURCE === 'brain',
+  libraryDocument: vi.fn(),
+  libraryOverview: vi.fn(),
+}));
 
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
@@ -20,6 +27,8 @@ import { EMPTY_GRID } from '@/lib/dimensions';
 import { GENERIC_ERROR_MESSAGE } from '@/lib/error-messages';
 import { LIBRARY_KICKOFF_PROMPT } from '@/lib/system-prompts';
 import { POST } from '@/app/api/chat/route';
+import { groundingForConversation, libraryGrounding } from '@/lib/brain/retrieve';
+import { libraryDocument, libraryOverview } from '@/lib/brain/corpus';
 
 const URL = 'http://localhost/api/chat';
 const USER: MockUser = { id: 'u1', email: 'user@example.com' };
@@ -742,5 +751,116 @@ describe('POST /api/chat — database failures', () => {
     expect(res.status).toBe(500);
     expect((await res.json()).error).not.toContain('awaiting approval');
     expect(anthropic.stream).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/chat — KNOWLEDGE_SOURCE=brain', () => {
+  beforeEach(() => {
+    vi.stubEnv('KNOWLEDGE_SOURCE', 'brain');
+    vi.mocked(groundingForConversation).mockResolvedValue('BRAIN-GROUNDING-MARKER');
+    vi.mocked(libraryGrounding).mockResolvedValue('BRAIN-MATCHING-MARKER');
+    vi.mocked(libraryOverview).mockResolvedValue({ overview: '[mahavistaar]\ntitle: MahaVISTAAR', count: 10 });
+    vi.mocked(libraryDocument).mockImplementation(async (slug) => (slug === 'mahavistaar' ? 'BRAIN-DOC-MARKER' : null));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['companion', undefined, ['adopter']],
+    ['analysis-doc', undefined, ['adopter']],
+    ['executive-summary', undefined, ['adopter']],
+    ['companion', 'contributor', ['pathway_contributor']],
+  ])('grounds %s (flow %s) on the retriever, with the request it was given', async (mode, flow, roles) => {
+    signIn(USER, roles as string[]);
+    const res = await post({ mode, flow, messages: [userMsg()], grid: EMPTY_GRID, meta: { sector: 'Agriculture' }, designId: 'd1' });
+    expect(res.status).toBe(200);
+    expect(systemText(streamArgs().system)).toContain('BRAIN-GROUNDING-MARKER');
+    expect(admin.ops('published_pathways')).toHaveLength(0);
+    expect(vi.mocked(groundingForConversation).mock.calls[0][0]).toMatchObject({
+      designId: 'd1',
+      mode,
+      flow,
+      meta: { sector: 'Agriculture' },
+      messages: [userMsg()],
+    });
+  });
+
+  it('keeps the grounding block in the cached (stable) part of the companion prompt', async () => {
+    await post({ mode: 'companion', messages: [userMsg()], grid: EMPTY_GRID, meta: {} });
+    const system = streamArgs().system as { text: string; cache_control?: unknown }[];
+    expect(system[0].cache_control).toBeTruthy();
+    expect(system[0].text).toContain('BRAIN-GROUNDING-MARKER');
+  });
+
+  it('never loads a corpus for extract-insights or pathway-draft', async () => {
+    signIn(USER, ['pathway_contributor']);
+    await post({ mode: 'pathway-draft', messages: [userMsg()], grid: EMPTY_GRID, meta: {} });
+    await post({ mode: 'extract-insights', flow: 'contributor', messages: [userMsg()], grid: EMPTY_GRID, meta: {} });
+    expect(groundingForConversation).not.toHaveBeenCalled();
+  });
+
+  it('still rejects the wrong role before any grounding', async () => {
+    const res = await post({ mode: 'companion', flow: 'contributor', messages: [userMsg()] });
+    expect(res.status).toBe(403);
+    expect(groundingForConversation).not.toHaveBeenCalled();
+  });
+
+  it('answers with the generic message when there is no brain copy at all', async () => {
+    vi.mocked(groundingForConversation).mockRejectedValue(new Error('no snapshot and GitHub down'));
+    const res = await post({ mode: 'companion', messages: [userMsg()], grid: EMPTY_GRID, meta: {} });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: GENERIC_ERROR_MESSAGE });
+    expect(anthropic.stream).not.toHaveBeenCalled();
+  });
+
+  describe('library', () => {
+    it('opens a published brain pathway from the brain, never the database', async () => {
+      signIn(null);
+      const res = await post({ mode: 'library', pathwayId: 'mahavistaar', messages: [] });
+      expect(res.status).toBe(200);
+      expect(systemText(streamArgs().system)).toContain('BRAIN-DOC-MARKER');
+      expect(session.ops('published_pathways')).toHaveLength(0);
+    });
+
+    it('404s a slug the brain has not published', async () => {
+      signIn(null);
+      const res = await post({ mode: 'library', pathwayId: 'test-assets-langchat', messages: [] });
+      expect(res.status).toBe(404);
+      expect(anthropic.stream).not.toHaveBeenCalled();
+    });
+
+    it('the kickoff turn gets the brain overview only, with no selection call', async () => {
+      signIn(null);
+      await post({ mode: 'library', messages: [] });
+      const system = systemText(streamArgs().system);
+      expect(system).toContain('[mahavistaar]');
+      expect(system).toContain('exactly 10 pathways');
+      expect(libraryGrounding).not.toHaveBeenCalled();
+      expect(system).not.toContain('MATCHING PATHWAYS');
+    });
+
+    it('a visitor message adds the matching pathways', async () => {
+      signIn(null);
+      await post({ mode: 'library', messages: [userMsg('Anything on voice AI for farmers?')] });
+      expect(systemText(streamArgs().system)).toContain('BRAIN-MATCHING-MARKER');
+      expect(vi.mocked(libraryGrounding).mock.calls[0][0]).toEqual([userMsg('Anything on voice AI for farmers?')]);
+    });
+
+    it('answers from the overview alone when matching found nothing to add', async () => {
+      signIn(null);
+      vi.mocked(libraryGrounding).mockResolvedValue('');
+      const res = await post({ mode: 'library', messages: [userMsg('Hi')] });
+      expect(res.status).toBe(200);
+      expect(systemText(streamArgs().system)).not.toContain('MATCHING PATHWAYS');
+    });
+
+    it('a rate-limited visitor never reaches the selection', async () => {
+      signIn(null);
+      rateLimitAllowed = false;
+      const res = await post({ mode: 'library', messages: [userMsg('Hi')] });
+      expect(res.status).toBe(429);
+      expect(libraryGrounding).not.toHaveBeenCalled();
+    });
   });
 });

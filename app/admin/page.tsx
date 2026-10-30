@@ -6,6 +6,7 @@ import { isAdmin, type Role } from '@/lib/roles';
 import AdminDashboard, { AdminUserRow } from '@/components/AdminDashboard';
 import AdminPathwaysPanel, { AdminPathwayRow, type AdminToolkitAsset } from '@/components/AdminPathwaysPanel';
 import { linkDomain } from '@/lib/toolkit-assets';
+import { isBrainSource, isLive, publishedSlugSet } from '@/lib/brain/corpus';
 import AdminContributorRegistrationsPanel, {
   AdminContributorRegistrationRow,
 } from '@/components/AdminContributorRegistrationsPanel';
@@ -21,6 +22,9 @@ export default async function AdminPage() {
   }
 
   const admin = createAdminClient();
+  // KNOWLEDGE_SOURCE=brain: Published means live in the brain, or its brain PR
+  // merged (lib/brain/corpus.ts isLive), not a published_pathways row.
+  const brain = isBrainSource();
   const [
     { data: usersData },
     { data: rolesData },
@@ -31,10 +35,14 @@ export default async function AdminPage() {
   ] = await Promise.all([
       admin.auth.admin.listUsers({ page: 1, perPage: 1000 }),
       admin.from('user_roles').select('user_id, role'),
-      admin.from('published_pathways').select('slug'),
+      brain ? Promise.resolve({ data: null }) : admin.from('published_pathways').select('slug'),
       admin
         .from('pathways')
-        .select('id, slug, title, sector, created_at, review_requested')
+        .select(
+          brain
+            ? 'id, slug, title, sector, created_at, review_requested, brain_pr_state, brain_pr_url, brain_validation, brain_validation_detail'
+            : 'id, slug, title, sector, created_at, review_requested'
+        )
         .order('created_at', { ascending: false }),
       admin
         .from('contributor_registrations')
@@ -63,7 +71,7 @@ export default async function AdminPage() {
     toolkitAssetsByPathway.set(a.pathway_id, list);
   }
 
-  const publishedSlugSet = new Set((publishedSlugsData ?? []).map((p) => p.slug));
+  const publishedSlugs = brain ? await publishedSlugSet() : new Set((publishedSlugsData ?? []).map((p) => p.slug));
 
   const registrationRows: AdminContributorRegistrationRow[] = (registrationsData ?? []).map((r) => ({
     id: r.id,
@@ -76,15 +84,30 @@ export default async function AdminPage() {
     createdAt: r.created_at,
   }));
 
-  const pathwayRows: AdminPathwayRow[] = (pathwaysData ?? []).map((p) => ({
+  type PathwayData = {
+    id: string;
+    slug: string;
+    title: string;
+    sector: string | null;
+    created_at: string;
+    review_requested: boolean | null;
+    brain_pr_state?: string | null;
+    brain_pr_url?: string | null;
+    brain_validation?: 'pending' | 'passed' | 'failed' | null;
+    brain_validation_detail?: string | null;
+  };
+  const pathwayRows: AdminPathwayRow[] = ((pathwaysData ?? []) as unknown as PathwayData[]).map((p) => ({
     id: p.id,
     slug: p.slug,
     title: p.title,
     sector: p.sector ?? '',
     created_at: p.created_at,
     reviewRequested: p.review_requested ?? false,
-    isPublished: publishedSlugSet.has(p.slug),
+    isPublished: isLive(p.slug, p.brain_pr_state, publishedSlugs),
     toolkitAssets: toolkitAssetsByPathway.get(p.id) ?? [],
+    ...(brain && p.brain_pr_state === 'open'
+      ? { brain: { prUrl: p.brain_pr_url ?? null, validation: p.brain_validation ?? null, validationDetail: p.brain_validation_detail ?? null } }
+      : {}),
   }));
 
   const rolesByUser = new Map<string, Role[]>();
@@ -137,7 +160,7 @@ export default async function AdminPage() {
         <p className="text-sm text-ink-soft mb-4">
           Review assembled pathway documents and publish them to the Explore library and Analyse corpus.
         </p>
-        <AdminPathwaysPanel initialRows={pathwayRows} />
+        <AdminPathwaysPanel initialRows={pathwayRows} brainMode={brain} />
       </div>
     </div>
   );

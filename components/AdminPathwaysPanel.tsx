@@ -20,6 +20,15 @@ export interface AdminPathwayRow {
   // the admin client in app/admin/page.tsx — the card shows the ones listed
   // in the document under review.
   toolkitAssets: AdminToolkitAsset[];
+  // KNOWLEDGE_SOURCE=brain only: the pathway's Cube-Brain pull request.
+  // Publishing merges it, which needs the brain's checks to have passed.
+  brain?: AdminBrainReview | null;
+}
+
+export interface AdminBrainReview {
+  prUrl: string | null;
+  validation: 'pending' | 'passed' | 'failed' | null;
+  validationDetail: string | null;
 }
 
 export interface AdminToolkitAsset {
@@ -50,7 +59,14 @@ const FILTERS: { value: StatusFilter; label: string }[] = [
   { value: 'draft', label: 'Draft' },
 ];
 
-export default function AdminPathwaysPanel({ initialRows }: { initialRows: AdminPathwayRow[] }) {
+export default function AdminPathwaysPanel({
+  initialRows,
+  brainMode = false,
+}: {
+  initialRows: AdminPathwayRow[];
+  // KNOWLEDGE_SOURCE=brain: Publish merges the brain PR; Decline and Resync appear.
+  brainMode?: boolean;
+}) {
   const [rows, setRows] = useState(initialRows);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +88,10 @@ export default function AdminPathwaysPanel({ initialRows }: { initialRows: Admin
         body: JSON.stringify({ pathway_id: id }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(data.error ?? 'Could not publish pathway.'); return; }
+      if (!res.ok) {
+        setError(data.detail ? `${data.error ?? 'Could not publish pathway.'} ${data.detail}` : (data.error ?? 'Could not publish pathway.'));
+        return;
+      }
       setRows((prev) => prev.map((r) => (r.id === id ? { ...r, isPublished: true, reviewRequested: false } : r)));
       if (data.assetsPublished === false) {
         showToast('Pathway published, but its toolkit assets could not be published. Publish again to retry.', 'error');
@@ -82,6 +101,52 @@ export default function AdminPathwaysPanel({ initialRows }: { initialRows: Admin
     } catch {
       // fetch itself failed (offline, DNS) — no response to read an error from.
       setError('Could not publish pathway. Check your connection and try again.');
+    } finally {
+      setPending(null);
+    }
+  }
+
+  // Brain mode: close the pathway's review; it goes back to its contributor as a draft.
+  async function decline(id: string, title: string) {
+    const ok = await confirm({
+      title: `Decline "${title}"?`,
+      message: 'This closes its review in the brain. The pathway goes back to its contributor as a draft, and nothing is published.',
+      confirmLabel: 'Decline',
+      danger: true,
+    });
+    if (!ok) return;
+    setPending(id);
+    setError(null);
+    try {
+      const res = await fetch('/api/admin/pathways/decline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pathway_id: id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setError(data.error ?? 'Could not decline pathway.'); return; }
+      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, reviewRequested: false } : r)));
+      showToast('Review declined. The pathway is a draft again.');
+    } catch {
+      setError('Could not decline pathway. Check your connection and try again.');
+    } finally {
+      setPending(null);
+    }
+  }
+
+  // Brain mode: pick up the latest brain content and every open review now,
+  // then reload so each row shows it.
+  async function resync() {
+    setPending('resync');
+    setError(null);
+    try {
+      const res = await fetch('/api/admin/brain/resync', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setError(data.error ?? 'Could not resync from the brain.'); return; }
+      showToast('Resynced from the brain.');
+      window.location.reload();
+    } catch {
+      setError('Could not resync from the brain. Check your connection and try again.');
     } finally {
       setPending(null);
     }
@@ -125,7 +190,7 @@ export default function AdminPathwaysPanel({ initialRows }: { initialRows: Admin
   return (
     <div className="flex flex-col gap-2">
       {confirmDialog}
-      <div className="mb-2 flex flex-wrap gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         {FILTERS.map((f) => {
           const active = filter === f.value;
           return (
@@ -144,6 +209,16 @@ export default function AdminPathwaysPanel({ initialRows }: { initialRows: Admin
             </button>
           );
         })}
+        {brainMode && (
+          <button
+            type="button"
+            onClick={resync}
+            disabled={pending !== null}
+            className="ml-auto rounded-lg border border-navy/15 px-2.5 py-1 text-xs font-medium text-navy transition hover:border-coral hover:text-coral disabled:opacity-50"
+          >
+            {pending === 'resync' ? 'Resyncing…' : 'Resync from brain'}
+          </button>
+        )}
       </div>
       {error && <p className="text-xs text-coral mb-1">{error}</p>}
       {filteredRows.length === 0 && (
@@ -158,6 +233,7 @@ export default function AdminPathwaysPanel({ initialRows }: { initialRows: Admin
           isPending={pending === row.id}
           onPublish={() => publish(row.id)}
           onRemove={() => remove(row.id, row.title)}
+          onDecline={brainMode ? () => decline(row.id, row.title) : undefined}
         />
       ))}
       <Pagination {...pagination} onPageChange={setPage} />
